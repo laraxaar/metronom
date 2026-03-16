@@ -50,6 +50,8 @@ bool AudioEngine::initialize(const std::string& configPath) {
     m_params.numOutputChannels = 2;
     m_params.numInputChannels = 1;
 
+    m_tuner.initialize(m_params.sampleRate);
+
     // Initialize modules
     for (auto& module : m_modules) {
         module->onInitialize(m_params);
@@ -97,19 +99,65 @@ void AudioEngine::audioCallback(const float* input, float* output, uint32_t nFra
     // 3. Synthesize click based on offsets
     synthesizeClick(output, nFrames, beatOffsets);
 
-    // 4. Notify modules of beats
+    // 4. Input Analysis (Legacy Refactored)
+    if (input) {
+        processInputAnalysis(input, nFrames);
+        m_tuner.process(input, nFrames);
+    }
+
+    // 5. Update UI Controller
+    if (m_uiController) {
+        VisualData data;
+        data.waveform.assign(input, input + std::min(nFrames, 512u)); 
+        data.currentFrequency = m_tuner.getFrequency();
+        data.confidence = m_tuner.getConfidence();
+        data.peakInput = m_inputPeak.load();
+        // Add more visual data from free-play/coach if needed
+        m_uiController->postVisualData(data);
+    }
+
+    // 6. Notify modules of beats
     for (uint32_t offset : beatOffsets) {
-        // Simple beat indexing (could be expanded with bar logic)
         for (auto& module : m_modules) {
             module->onBeat(0, offset); 
         }
     }
 
-    // 5. Run module audio processing
-    // Modules can modify the 'output' buffer (e.g., adding effects or their own synthesis)
+    // 7. Run module audio processing
     for (auto& module : m_modules) {
         module->processAudio(input, output, nFrames);
     }
+}
+
+void AudioEngine::processInputAnalysis(const float* input, uint32_t nFrames) {
+    // Legacy Smart Onset Detection logic applied in windows
+    uint32_t winSize = std::max(1u, (m_params.sampleRate / 100)); // 10ms
+    float blockPeak = 0.0f;
+
+    for (uint32_t i = 0; i < nFrames; i += winSize) {
+        uint32_t n = std::min(nFrames - i, winSize);
+        double curSec = 0.0; // In a real app, track total elapsed seconds
+        
+        // Track peak
+        for(uint32_t j = 0; j < n; ++j) {
+            float v = std::abs(input[i+j]);
+            if (v > blockPeak) blockPeak = v;
+        }
+
+        bool onset = m_onset.processWindow(input + i, n, m_params.sampleRate, m_currentBpm.load(), curSec);
+        
+        if (onset) {
+            if (m_freePlay.active.load()) {
+                m_freePlay.recordOnset(curSec);
+            }
+            // Logic for Accuracy calculation can also go here or in a module
+        }
+    }
+
+    // Peak decay
+    float oldPeak = m_inputPeak.load();
+    if (blockPeak > oldPeak) m_inputPeak.store(blockPeak);
+    else m_inputPeak.store(oldPeak * 0.95f);
 }
 
 void AudioEngine::synthesizeClick(float* buffer, uint32_t nFrames, const std::vector<uint32_t>& offsets) {

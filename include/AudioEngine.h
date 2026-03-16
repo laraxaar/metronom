@@ -1,7 +1,12 @@
-#pragma once
 #include "IMetronomeModule.h"
 #include "LockFreeQueue.h"
 #include "MetronomeCore.h"
+#include "PreciseTuner.h"
+#include "UIController.h"
+#include "SmartOnsetDetector.h"
+#include "FreePlayTracker.h"
+#include "TapDetector.h"
+#include "TempoCoach.h"
 #include <vector>
 #include <memory>
 #include <atomic>
@@ -18,8 +23,6 @@ public:
 
     /**
      * @brief Initialize the engine with a JSON configuration file.
-     * @param configPath Path to the JSON configuration file.
-     * @return true on success.
      */
     bool initialize(const std::string& configPath);
 
@@ -35,10 +38,6 @@ public:
 
     /**
      * @brief Primary audio callback (called by the hardware driver).
-     * @param input Buffer containing incoming audio data (e.g., from mic).
-     * @param output Buffer to be filled with outgoing audio data (metronome click).
-     * @param nFrames Number of samples in the current audio block.
-     * @note This function MUST be real-time safe (no locks, no allocation).
      */
     void audioCallback(const float* input, float* output, uint32_t nFrames);
 
@@ -52,6 +51,16 @@ public:
      */
     void setBpm(double bpm);
 
+    /**
+     * @brief Set the UI controller for state synchronization.
+     */
+    void setUIController(std::shared_ptr<UIController> uiController) { m_uiController = uiController; }
+
+    // Legacy getters for UI
+    float getInputPeak() const { return m_inputPeak.load(); }
+    double getLiveBpm() const { return m_freePlay.liveBpm.load(); }
+    double getStability() const { return m_freePlay.stability.load(); }
+
 private:
     // Audio configuration
     AudioParams m_params;
@@ -59,12 +68,24 @@ private:
     // Core timing engine
     MetronomeCore m_metronomeCore;
     
+    // Advanced DSP & Legacy Components
+    PreciseTuner m_tuner;
+    SmartOnsetDetector m_onset;
+    FreePlayTracker m_freePlay;
+    TapDetector m_tap;
+    TempoCoach m_coach;
+    
+    // UI Bridge
+    std::shared_ptr<UIController> m_uiController;
+    
     // Plugin chain
     std::vector<std::unique_ptr<IMetronomeModule>> m_modules;
     
     // Thread-safe state
     std::atomic<bool> m_running{false};
     std::atomic<double> m_currentBpm{120.0};
+    std::atomic<float> m_inputPeak{0.0f};
+    std::atomic<bool> m_analyzing{false};
     
     // Device management (internal abstraction)
     struct DeviceImpl;
@@ -72,4 +93,5 @@ private:
 
     // Helper for sample processing
     void synthesizeClick(float* buffer, uint32_t nFrames, const std::vector<uint32_t>& offsets);
+    void processInputAnalysis(const float* input, uint32_t nFrames);
 };

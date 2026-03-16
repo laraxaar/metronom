@@ -7,8 +7,10 @@
  * @brief Represents a point in the tempo map for BPM interpolation.
  */
 struct TempoPoint {
-    double timeSec;
-    double bpm;
+    double timeStart;
+    double timeEnd;
+    double bpmStart;
+    double bpmEnd;
 };
 
 /**
@@ -44,9 +46,9 @@ public:
     void process(uint32_t nFrames, uint32_t sampleRate, std::vector<uint32_t>& outBeatOffsets);
 
     /**
-     * @brief Add a point to the tempo map.
+     * @brief Add a point or ramp to the tempo map.
      */
-    void addTempoPoint(double timeSec, double bpm);
+    void addTempoPoint(double timeStart, double timeEnd, double bpmStart, double bpmEnd);
 
     /**
      * @brief Get BPM at a specific time using linear interpolation.

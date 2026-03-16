@@ -7,11 +7,11 @@ void MetronomeCore::reset() {
     m_totalElapsedSec = 0.0;
 }
 
-void MetronomeCore::addTempoPoint(double timeSec, double bpm) {
-    m_tempoMap.push_back({timeSec, bpm});
-    // Ensure map is sorted by time
+void MetronomeCore::addTempoPoint(double timeStart, double timeEnd, double bpmStart, double bpmEnd) {
+    m_tempoMap.push_back({timeStart, timeEnd, bpmStart, bpmEnd});
+    // Ensure map is sorted by start time
     std::sort(m_tempoMap.begin(), m_tempoMap.end(), [](const TempoPoint& a, const TempoPoint& b) {
-        return a.timeSec < b.timeSec;
+        return a.timeStart < b.timeStart;
     });
 }
 
@@ -20,26 +20,30 @@ double MetronomeCore::getBpmAtTime(double timeSec) const {
         return m_targetBpm.load(std::memory_order_relaxed);
     }
 
-    if (timeSec <= m_tempoMap.front().timeSec) {
-        return m_tempoMap.front().bpm;
+    // Find the current active tempo point or ramp
+    for (const auto& point : m_tempoMap) {
+        if (timeSec >= point.timeStart && timeSec < point.timeEnd) {
+            if (point.bpmStart == point.bpmEnd) {
+                return point.bpmStart;
+            } else {
+                // Linear interpolation (ramp)
+                double progress = (timeSec - point.timeStart) / (point.timeEnd - point.timeStart);
+                return point.bpmStart + (point.bpmEnd - point.bpmStart) * progress;
+            }
+        }
+    }
+    
+    // Fallback: If before the first point, use target BPM
+    if (timeSec < m_tempoMap.front().timeStart) {
+        return m_targetBpm.load(std::memory_order_relaxed);
     }
 
-    if (timeSec >= m_tempoMap.back().timeSec) {
-        return m_tempoMap.back().bpm;
+    // Fallback: If after the last point, use the end BPM of the last point
+    if (timeSec >= m_tempoMap.back().timeEnd) {
+        return m_tempoMap.back().bpmEnd;
     }
 
-    // Binary search for the interval
-    auto it = std::upper_bound(m_tempoMap.begin(), m_tempoMap.end(), timeSec, 
-        [](double val, const TempoPoint& p) {
-            return val < p.timeSec;
-        });
-
-    auto p2 = *it;
-    auto p1 = *(--it);
-
-    // Linear interpolation
-    double t = (timeSec - p1.timeSec) / (p2.timeSec - p1.timeSec);
-    return p1.bpm + (p2.bpm - p1.bpm) * t;
+    return m_targetBpm.load(std::memory_order_relaxed);
 }
 
 void MetronomeCore::process(uint32_t nFrames, uint32_t sampleRate, std::vector<uint32_t>& outBeatOffsets) {

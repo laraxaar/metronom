@@ -109,3 +109,42 @@ private:
     int m_testBeats = 16;
     bool m_isMuted = false;
 };
+/**
+ * @brief The "Boss" - combines silence, jitter, and erratic patterns.
+ */
+class RhythmBoss : public IMetronomeModule {
+public:
+    void onInitialize(const AudioParams& params) override {}
+    
+    void processAudio(const float* input, float* output, uint32_t nFrames) override {
+        if (m_isSilent) {
+            for (uint32_t i = 0; i < nFrames * 2; ++i) output[i] = 0.0f;
+        }
+    }
+
+    void onBeat(int beatIndex, uint32_t sampleOffset) override {
+        m_tickCount++;
+        
+        // Random silence based on level
+        std::uniform_real_distribution<float> dist(0.0f, 1.0f);
+        m_isSilent = (dist(m_gen) < 0.03f * m_level);
+
+        // Tempo jitter at high levels
+        if (m_level >= 3 && m_tickCount % 16 == 0) {
+            std::uniform_int_distribution<int> jitterDist(-5 * m_level, 5 * m_level);
+            int jitter = jitterDist(m_gen);
+            // This would ideally notify the engine to change BPM
+            std::cout << "[RhythmBoss] JITTER: " << jitter << " BPM" << std::endl;
+        }
+    }
+
+    void onBar(int barIndex) override {}
+    void onConfigChange(const std::string& jsonConfig) override {}
+    const char* getName() const override { return "RhythmBoss"; }
+
+private:
+    int m_level = 5;
+    int m_tickCount = 0;
+    bool m_isSilent = false;
+    std::mt19937 m_gen{std::random_device{}()};
+};

@@ -11,8 +11,11 @@ struct VisualData {
     std::vector<float> waveform;
     std::vector<float> spectrum;
     float peakInput;
+    float peakOutput;
     float currentFrequency;
     float confidence;
+    float cpuLoad;
+    std::vector<float> hitDeviations; // New field for Visual Analytics
 };
 
 /**

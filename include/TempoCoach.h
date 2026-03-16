@@ -23,6 +23,10 @@ public:
     int missHits = 0;    // >=40ms
     double sumDeviation = 0;
     double avgDeviationMs = 0;
+
+    std::vector<double> getRecentDeviations() const {
+        return std::vector<double>(m_recentDevs.begin(), m_recentDevs.end());
+    }
     
     // 0=can increase, 1=keep, 2=decrease
     std::atomic<int> adviceLevel{1};

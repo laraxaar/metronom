@@ -2,13 +2,31 @@
 #include <vector>
 #include <atomic>
 #include <cstdint>
+#include <string>
+#include <optional>
 
 /**
- * @brief High-precision Pitch Detection based on YIN algorithm.
- * Refactored from legacy engine with improved harmonic rejection and stability.
+ * @brief Represents a specific instrument tuning.
+ */
+struct TuningPreset {
+    std::string name;
+    std::vector<float> frequencies; // e.g., 82.41, 110.0, etc.
+};
+
+/**
+ * @brief High-precision Pitch Detection based on MPM (McLeod Pitch Method).
+ * Optimized for Bass, Guitar (Hi-Gain), and Drums.
  */
 class PreciseTuner {
 public:
+    enum class Mode {
+        GuitarStandard,
+        GuitarDropD,
+        BassStandard,
+        Bass5String,
+        Custom
+    };
+
     PreciseTuner();
     ~PreciseTuner() = default;
 
@@ -19,55 +37,59 @@ public:
 
     /**
      * @brief Process a block of input samples.
-     * @param input Pointer to the input buffer.
-     * @param nFrames Number of samples in the buffer.
      */
     void process(const float* input, uint32_t nFrames);
 
     /**
-     * @brief Get the detected frequency in Hz.
+     * @brief Set the tuner mode and update internal filters.
      */
-    float getFrequency() const { return m_currentHz.load(); }
-
+    void setMode(Mode mode);
+    
     /**
-     * @brief Get detection confidence (0.0 to 1.0).
+     * @brief Set a custom tuning target.
      */
-    float getConfidence() const { return m_confidence.load(); }
+    void setCustomTuning(const std::vector<float>& frequencies);
 
     /**
      * @brief Enable/disable the tuner.
      */
     void setEnabled(bool enabled) { m_enabled = enabled; }
 
+    // Results (Thread-safe)
+    float getFrequency() const { return m_currentHz.load(); }
+    float getConfidence() const { return m_confidence.load(); }
+    
+    /**
+     * @brief Returns the index of the nearest note in the current tuning.
+     */
+    int getNearestNoteIndex() const;
+    
+    /**
+     * @brief Returns the deviation in cents from the nearest target note.
+     */
+    float getCentsDeviation() const;
+
 private:
     uint32_t m_sampleRate = 44100;
     bool m_enabled = true;
+    Mode m_mode = Mode::GuitarStandard;
+    std::vector<float> m_targetFrequencies;
 
     // Buffers and indices
     std::vector<float> m_buffer;
     size_t m_cursor = 0;
     size_t m_windowSize = 8192;
 
-    // Results (Thread-safe)
     std::atomic<float> m_currentHz{0.0f};
     std::atomic<float> m_confidence{0.0f};
 
     // DSP State
     float m_lpfState = 0.0f;
-    float m_lpfAlpha = 0.15f;
-    float m_prevHz = 0.0f;
-
-    // Constants
-    const float m_threshold = 0.10f;
-    const float m_hysteresisHz = 1.5f; // Minimum change to update display
+    float m_lpfAlpha = 0.15f; 
 
     /**
-     * @brief Core YIN algorithm implementation.
+     * @brief McLeod Pitch Method implementation.
+     * More robust than YIN for low frequencies and harmonic-rich signals.
      */
-    float computeYin(float& outConfidence);
-
-    /**
-     * @brief Apply a simple LPF to suppress hi-gain harmonics.
-     */
-    float applyLPF(float sample);
+    float computeMPM(float& outConfidence);
 };

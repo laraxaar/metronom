@@ -1,0 +1,57 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Metronome Engine Configuration",
+  "type": "object",
+  "properties": {
+    "engine": {
+      "type": "object",
+      "properties": {
+        "sampleRate": { "type": "integer", "default": 44100 },
+        "bufferSize": { "type": "integer", "default": 512 },
+        "inputDevice": { "type": "string", "default": "Default" },
+        "outputDevice": { "type": "string", "default": "Default" },
+        "api": { "type": "string", "enum": ["ASIO", "CoreAudio", "JACK", "ALSA", "WASAPI"], "default": "WASAPI" }
+      },
+      "required": ["sampleRate", "bufferSize"]
+    },
+    "metronome": {
+      "type": "object",
+      "properties": {
+        "bpm": { "type": "number", "minimum": 10, "maximum": 1000, "default": 120 },
+        "timeSignature": {
+          "type": "array",
+          "items": { "type": "integer" },
+          "minItems": 2,
+          "maxItems": 2,
+          "default": [4, 4]
+        },
+        "subdivision": { "type": "integer", "minimum": 1, "maximum": 16, "default": 1 },
+        "tempoMap": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "sec": { "type": "number" },
+              "bpm": { "type": "number" }
+            },
+            "required": ["sec", "bpm"]
+          }
+        }
+      },
+      "required": ["bpm", "timeSignature"]
+    },
+    "plugins": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "enabled": { "type": "boolean", "default": true },
+          "config": { "type": "object" }
+        },
+        "required": ["name", "config"]
+      }
+    }
+  },
+  "required": ["engine", "metronome", "plugins"]
+}

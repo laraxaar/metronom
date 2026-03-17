@@ -15,6 +15,7 @@ struct UIState {
     int timeSigTop = 4;
     int timeSigBottom = 4;
     bool playing = false;
+    bool freePlay = false;
     float groove = 0.0f;
     int subdivision = 4;  // 4,8,12,16,20
 
@@ -30,6 +31,11 @@ struct UIState {
     float accuracy = 0.0f;
     std::string scoreRank = "-";
     GrooveProfile grooveProfile;
+    // Free Play / Live tempo
+    double playerBpm = 0.0;
+    float playerStability = 0.0f; // 0..100
+    std::string coachText;
+    bool flowActive = false;
 
     // Tuner
     float currentFreq = 0.0f;
@@ -47,6 +53,36 @@ struct UIState {
     float masterPeak = 0.0f;
     float clickPeak = 0.0f;
     float inputPeak = 0.0f;
+
+    // Training
+    bool ladderEnabled = false;
+    int ladderBars = 4;
+    float ladderInc = 5.0f;
+    bool silenceEnabled = false;
+    float silenceProb = 0.2f;
+    bool disappearingEnabled = false;
+    int disappearVisible = 4;
+    int disappearHidden = 4;
+    bool grooveEnabled = false;
+    float grooveMaxShiftMs = 0.0f;
+    bool drunkenEnabled = false;
+    float drunkenLevel = 0.0f;
+    bool bossEnabled = false;
+    float bossLevel = 0.5f;
+    float bossFlash = 0.0f;
+    bool bossGameOver = false;
+    bool humanTestEnabled = false;
+
+    // Polyrhythm trainer
+    bool polyEnabled = false;
+    int polyX = 0;
+    int polyY = 0;
+
+    // Coach history (weekly)
+    char histDate[7][11]{};
+    float histAcc[7]{};
+    float histStab[7]{};
+    float histMinutes[7]{};
 
     // Mouse
     double mouseX = 0, mouseY = 0;
@@ -73,6 +109,13 @@ enum class UIEventType {
     MixerInputChange,
     SetInstrument,
     SetTuning,
+    TrainingToggle,
+    TrainingParamAdjust,
+    HumanTestToggle,
+    PolyrhythmSet,
+    PolyrhythmClear,
+    FreePlayToggle,
+    ToggleTrainingDrawer,
 };
 
 struct UIEvent {
@@ -109,12 +152,16 @@ private:
     UIEvent renderMatrix(const UIState& state, float x, float y, float w, float h);
     UIEvent renderTuner(const UIState& state, float x, float y, float w, float h);
     UIEvent renderMixer(const UIState& state, float x, float y, float w, float h);
+    void renderCoachTab(const UIState& state, float x, float y, float w, float h);
+    UIEvent renderTrainingDrawer(const UIState& state, float W, float H);
 
     bool isHovered(float x, float y, float w, float h, const UIState& state) const;
 
     GLFWwindow* m_window;
     std::unique_ptr<FontRenderer> m_fontRenderer;
     int m_activeTab = 0;
+    bool m_trainingDrawerOpen = false;
+    float m_trainingDrawerAnim = 0.0f; // 0..1
 
     // GL 3.3 geometry shader
     unsigned int m_geoShader = 0;

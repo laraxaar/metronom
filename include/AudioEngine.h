@@ -17,6 +17,11 @@
 #include "RhythmGrid.h"
 #include "MixerState.h"
 #include "MetronomeEngine.h"
+#include "AccuracyAnalyzer.h"
+#include "TrainingModules2.h"
+#include "AudioMixer.h"
+#include "LiveTempoDetector.h"
+#include "LiveCoach.h"
 #include <vector>
 #include <memory>
 #include <atomic>
@@ -83,6 +88,9 @@ public:
      * @brief Add a polyrythmic pattern.
      */
     void addPolyrhythm(int ratio);
+    void setPolyrhythmEnabled(bool enabled);
+    void setPolyrhythmRatio(int x, int y); // X against Y beats in bar
+    void clearPolyrhythm();
 
     /**
      * @brief Set the tuner mode and instrument optimizations.
@@ -207,6 +215,7 @@ public:
      * Higher rates (48kHz+) improve pitch detection accuracy for low frequencies.
      */
     void setSampleRate(uint32_t sampleRate);
+    void setBufferSize(uint32_t bufferFrames);
 
     /**
      * @brief Reopen the audio stream with current device/channel settings.
@@ -238,6 +247,12 @@ public:
     std::string getScoreRank() const { return m_coach.getScoreRank(); }
     GrooveProfile getGrooveProfile() const { return m_coach.getGrooveProfile(); }
     float getInputRMS() const { return m_inputProcessor.getCurrentRMS(); }
+    double getLivePlayerBpm() const { return m_liveTempo.getLiveBpm(); }
+    float getLivePlayerStability() const { return m_liveTempo.getStabilityPercent(); }
+    // Live coaching (lock-free snapshot)
+    const char* getLiveCoachText() const { return m_coachText; } // read via seq protocol below
+    uint32_t getLiveCoachSeq() const { return m_coachSeq.load(std::memory_order_acquire); }
+    bool isFlowActive() const { return m_flowActive.load(std::memory_order_relaxed); }
 
     /**
      * @brief Get the shared PitchResult for reading detected pitch from GUI.
@@ -262,6 +277,53 @@ public:
     void setTuning(int instrument, int tuning);
     void setPracticeScale(float scale); // 0.25 to 1.0
     bool loadWavSample(int type, const std::string& path); // type: 0=normal, 1=accent
+    bool loadMixerSample(int sampleId, const std::string& path); // 0=click,1=accent,2=kick,3=hat,4=cowbell
+
+    // =====================================================================
+    // Training (live, RT-safe)
+    // =====================================================================
+    enum class TrainingModuleId : int {
+        Ladder = 1,
+        RandomSilence = 2,
+        Disappearing = 3,
+        GrooveShift = 4,
+        DrunkenDrummer = 5,
+        RhythmBoss = 6
+    };
+
+    enum class TrainingParamId : int {
+        LadderMeasuresPerStep = 100,
+        LadderBpmIncrement = 101,
+        SilenceProbability = 110,
+        GrooveMaxShiftMs = 120,
+        DisappearVisibleBars = 130,
+        DisappearHiddenBars = 131,
+        DrunkenLevel = 140,
+        BossLevel = 150
+    };
+
+    void setTrainingEnabled(TrainingModuleId id, bool enabled);
+    void adjustTrainingParam(TrainingParamId id, float delta);
+    void setHumanTestEnabled(bool enabled);
+    bool isHumanTestEnabled() const { return m_humanTestEnabled.load(std::memory_order_relaxed); }
+
+    // UI getters (thread-safe)
+    bool isTrainingLadderEnabled() const { return m_trainLadderEnabled.load(std::memory_order_relaxed); }
+    bool isTrainingSilenceEnabled() const { return m_trainSilenceEnabled.load(std::memory_order_relaxed); }
+    bool isTrainingDisappearingEnabled() const { return m_trainDisappearEnabled.load(std::memory_order_relaxed); }
+    bool isTrainingGrooveEnabled() const { return m_trainGrooveEnabled.load(std::memory_order_relaxed); }
+    bool isTrainingDrunkenEnabled() const { return m_trainDrunkenEnabled.load(std::memory_order_relaxed); }
+    bool isTrainingBossEnabled() const { return m_trainBossEnabled.load(std::memory_order_relaxed); }
+    float getTrainingSilenceProb() const { return m_silenceProb.load(std::memory_order_relaxed); }
+    float getTrainingGrooveMaxShiftMs() const { return m_grooveMaxShiftMs.load(std::memory_order_relaxed); }
+    int getTrainingLadderBars() const { return m_ladderBars.load(std::memory_order_relaxed); }
+    float getTrainingLadderInc() const { return m_ladderInc.load(std::memory_order_relaxed); }
+    int getTrainingDisappearVisible() const { return m_disappearVis.load(std::memory_order_relaxed); }
+    int getTrainingDisappearHidden() const { return m_disappearHid.load(std::memory_order_relaxed); }
+    float getTrainingDrunkenLevel() const { return m_drunkenLevel.load(std::memory_order_relaxed); }
+    float getBossLevel() const { return m_bossLevel.load(std::memory_order_relaxed); }
+    float getBossFlash() const { return m_bossFlash.load(std::memory_order_relaxed); }
+    bool isBossGameOver() const { return m_bossGameOver.load(std::memory_order_relaxed); }
 
 private:
     // Audio configuration
@@ -272,6 +334,41 @@ private:
 
     // Sample-accurate rhythm engine (events + atomic grid)
     MetronomeEngine m_metronomeEngine;
+
+    // Training module instances (live-configurable)
+    training::BpmLadder     m_trainLadder;
+    training::RandomSilence m_trainSilence;
+    training::Disappearing  m_trainDisappear;
+    training::GrooveShift   m_trainGroove;
+    training::DrunkenDrummer m_trainDrunken;
+    training::RhythmBoss     m_trainBoss;
+    std::atomic<bool>       m_trainLadderEnabled{false};
+    std::atomic<bool>       m_trainSilenceEnabled{false};
+    std::atomic<bool>       m_trainDisappearEnabled{false};
+    std::atomic<bool>       m_trainGrooveEnabled{false};
+    std::atomic<bool>       m_trainDrunkenEnabled{false};
+    std::atomic<bool>       m_trainBossEnabled{false};
+    std::atomic<bool>       m_humanTestEnabled{false};
+    std::atomic<float>      m_silenceProb{0.2f};
+    std::atomic<float>      m_grooveMaxShiftMs{0.0f};
+    std::atomic<int>        m_ladderBars{4};
+    std::atomic<float>      m_ladderInc{5.0f};
+    std::atomic<int>        m_disappearVis{4};
+    std::atomic<int>        m_disappearHid{4};
+    std::atomic<float>      m_drunkenLevel{0.0f};
+    std::atomic<float>      m_bossLevel{0.5f};
+    std::atomic<float>      m_bossFlash{0.0f}; // UI overlay intensity
+    std::atomic<bool>       m_bossGameOver{false};
+    uint64_t                m_bossStartFrame = 0;
+
+    // Accuracy analyzer (onsets vs ticks)
+    AccuracyAnalyzer m_accuracyAnalyzer;
+
+    // Scratch buffer for onset detector (mono window, avoids allocations)
+    std::vector<float> m_onsetWindow;
+
+    // Final summing mixer
+    AudioMixer m_audioMixer;
     
     // Input processing pipeline (DC filter + RingBuffer)
     InputProcessor m_inputProcessor;
@@ -284,9 +381,19 @@ private:
     TunerWorker m_tunerWorker;  ///< Dedicated thread for pitch analysis
     SmartOnsetDetector m_onset;
     FreePlayTracker m_freePlay;
+    LiveTempoDetector m_liveTempo;
+    LiveCoach m_liveCoach;
+
+    // Live coach text (seqlock)
+    std::atomic<uint32_t> m_coachSeq{0};
+    char m_coachText[128] = {};
+    std::atomic<bool> m_flowActive{false};
     TapDetector m_tap;
     TempoCoach m_coach;
     PolyrhythmEngine m_polyEngine;
+    std::atomic<bool> m_polyEnabled{false};
+    std::atomic<int> m_polyX{0};
+    std::atomic<int> m_polyY{0};
     MidiSyncManager m_midiSync;
     
     // UI Bridge
@@ -313,10 +420,6 @@ private:
     RhythmGrid m_grid;
     MixerState m_mixer;
     
-    // Click tail buffer (to prevent cut-off clicks at buffer boundaries)
-    std::vector<float> m_clickTail;
-    uint32_t m_clickTailPos = 0;
-    
     // RtAudio instance
     std::unique_ptr<RtAudio> m_rtAudio;
 
@@ -326,10 +429,6 @@ private:
     uint32_t m_requestedSampleRate{48000};
 
     float m_practiceScale = 1.0f;
-    std::vector<float> m_normalSample;
-    std::vector<float> m_accentSample;
-
     // Helper for sample processing
-    void synthesizeClick(float* buffer, uint32_t nFrames, const MetronomeEngine::Event* events, size_t numEvents);
     void processInputAnalysis(const float* input, uint32_t nFrames);
 };

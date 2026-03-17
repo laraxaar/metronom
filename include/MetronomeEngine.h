@@ -2,6 +2,10 @@
 #include <atomic>
 #include <cstdint>
 #include <cstddef>
+#include <memory>
+
+class TempoMap;
+class ITrainingModule;
 
 /**
  * @brief Real-time safe sample-accurate metronome + rhythm grid.
@@ -14,10 +18,12 @@
 class MetronomeEngine {
 public:
     enum class StepState : uint8_t { ACCENT = 0, NORMAL = 1, MUTE = 2 };
+    enum class GridId : uint8_t { A = 0, B = 1 };
 
     struct Event {
         uint32_t sampleOffset = 0;  ///< sample index inside current block
         uint16_t stepIndex = 0;     ///< step index within bar [0..stepsPerBar-1]
+        GridId grid = GridId::A;    ///< which grid emitted this event
         StepState state = StepState::NORMAL;
         float velocity = 0.6f;      ///< 1.0 accent, 0.6 normal, 0.0 mute
     };
@@ -38,14 +44,51 @@ public:
     int getSubdivisionParts() const { return m_partsPerQuarter.load(std::memory_order_relaxed); }
     int getStepsPerBar() const { return m_stepsPerBar.load(std::memory_order_relaxed); }
 
+    // ----- Grid B (polyrhythm) -----
+    void setGridBEnabled(bool enabled) { m_gridBEnabled.store(enabled, std::memory_order_relaxed); }
+    bool isGridBEnabled() const { return m_gridBEnabled.load(std::memory_order_relaxed); }
+    void setSubdivisionPartsB(int partsPerQuarter); // 1,2,3,4,5,7
+    int getSubdivisionPartsB() const { return m_partsPerQuarterB.load(std::memory_order_relaxed); }
+    int getStepsPerBarB() const { return m_stepsPerBarB.load(std::memory_order_relaxed); }
+    int getCurrentStepB() const { return m_currentStepB.load(std::memory_order_relaxed); }
+    void setGridBClicksPerBar(int clicks); // polyrhythm: X clicks across one bar
+    int getGridBClicksPerBar() const { return m_gridBClicksPerBar.load(std::memory_order_relaxed); }
+
     // ----- Grid editing (thread-safe) -----
     void setStepState(int stepIndex, StepState state);
     StepState getStepState(int stepIndex) const;
     void cycleStepState(int stepIndex); // ACCENT -> NORMAL -> MUTE -> ACCENT
 
+    void setStepStateB(int stepIndex, StepState state);
+    StepState getStepStateB(int stepIndex) const;
+    void cycleStepStateB(int stepIndex);
+
     // ----- Transport -----
     void reset();                        ///< resets phase + playhead to 0
     int getCurrentStep() const { return m_currentStep.load(std::memory_order_relaxed); }
+
+    // ----- Tempo map (thread-safe) -----
+    /**
+     * @brief Set or clear the tempo map (nullptr = disabled).
+     *
+     * This method is safe to call from a UI/control thread while audio is running.
+     */
+    void setTempoMap(std::shared_ptr<const TempoMap> map);
+
+    /**
+     * @brief Global practice scaling factor, multiplies tempo-map BPM.
+     *
+     * Typical values: 0.25, 0.5, 1.0.
+     * Clamp range: 0.01..4.0 (safety).
+     */
+    void setScaling(float factor);
+
+    float getScaling() const { return m_scaling.load(std::memory_order_relaxed); }
+
+    // ----- Training modules (RT-safe chain, pointers must outlive audio) -----
+    static constexpr int MAX_TRAINING_MODULES = 8;
+    void clearTrainingModules();
+    bool addTrainingModule(ITrainingModule* module);
 
     /**
      * @brief Process one audio block and emit click trigger events.
@@ -79,195 +122,26 @@ private:
     std::atomic<int>      m_partsPerQuarter{1};  // 1,2,3,4,5,7
     std::atomic<int>      m_stepsPerBar{4};
 
+    // Tempo map + scaling
+    std::atomic<float> m_scaling{1.0f};
+    std::shared_ptr<const TempoMap> m_tempoMap; // accessed via atomic_load/store free functions
+    uint64_t m_totalSamples = 0;                // transport time (audio-thread only)
+
+    // Training modules
+    ITrainingModule* m_trainingModules[MAX_TRAINING_MODULES]{};
+    std::atomic<int> m_trainingModuleCount{0};
+
     // Grid state
     std::atomic<uint8_t>  m_stepStates[MAX_STEPS]{}; // StepState as uint8_t
     std::atomic<int>      m_currentStep{0};
+    std::atomic<uint8_t>  m_stepStatesB[MAX_STEPS]{};
+    std::atomic<int>      m_currentStepB{0};
+    std::atomic<int>      m_partsPerQuarterB{1};
+    std::atomic<int>      m_stepsPerBarB{4};
+    std::atomic<bool>     m_gridBEnabled{false};
+    std::atomic<int>      m_gridBClicksPerBar{0}; // 0 = use partsPerQuarterB timing
 
     // Sample-accurate phase accumulator
     double m_samplesUntilNextTick = 0.0; // can be negative when catching up
-};
-
-#pragma once
-#include <cstdint>
-#include <atomic>
-#include <vector>
-#include <cstring>
-
-/**
- * @brief State of a single rhythmic step.
- */
-enum class StepType : uint8_t {
-    ACCENT = 0,   ///< Loud click  (velocity 1.0)
-    NORMAL = 1,   ///< Regular click (velocity 0.6)
-    MUTE   = 2    ///< Silence      (velocity 0.0)
-};
-
-/**
- * @brief A click trigger event generated during processBlock.
- * Contains all info needed by the audio mixer to synthesize the correct sound.
- */
-struct ClickEvent {
-    uint32_t sampleOffset;  ///< Exact sample position within the current buffer
-    int      stepIndex;     ///< Which step in the grid fired (0-based)
-    int      beatIndex;     ///< Which beat within the bar (0-based, pre-subdivision)
-    int      subIndex;      ///< Subdivision index within the beat (0-based)
-    StepType type;          ///< Hit type: ACCENT, NORMAL, or MUTE
-    float    velocity;      ///< 0.0–1.0
-    bool     isDownbeat;    ///< True if this is beat 0 of the bar
-};
-
-/**
- * @brief Snapshot of engine state for lock-free UI transfer.
- */
-struct EngineSnapshot {
-    uint8_t  steps[64]{};      ///< StepType values
-    int      numSteps = 0;
-    int      currentStep = -1; ///< Playhead position (-1 = stopped)
-    int      beatsPerBar = 4;
-    int      subdivision = 1;
-    double   bpm = 120.0;
-    bool     running = false;
-};
-
-/**
- * @brief Sample-accurate Metronome Engine with Rhythm Grid.
- *
- * Replaces the phase-based MetronomeCore with precise sample counting.
- * All timing is computed in integer samples — zero accumulation drift.
- *
- * Features:
- *   - BPM 10–1000
- *   - Time signatures 1–32 beats per bar
- *   - Subdivisions: 1, 2, 3 (triplets), 4, 5, 7
- *   - Per-step ACCENT / NORMAL / MUTE
- *   - Click trigger events with sample-accurate offsets
- *   - Thread-safe BPM and grid changes via std::atomic
- *   - Uses sample rate from AudioEngine (passed at init)
- *
- * Integration:
- *   - Call processBlock() from the audio callback
- *   - Read outEvents for click triggers to feed into the audio mixer
- *   - Grid mutations (cycleStep, setSubdivision) are safe from any thread
- */
-class MetronomeEngine {
-public:
-    static constexpr int MAX_STEPS = 64;
-    static constexpr int MAX_EVENTS_PER_BLOCK = 64;
-
-    MetronomeEngine();
-    ~MetronomeEngine() = default;
-
-    // =====================================================================
-    // Initialization
-    // =====================================================================
-
-    /**
-     * @brief Set the sample rate. Must be called before processBlock.
-     */
-    void setSampleRate(uint32_t sampleRate);
-
-    /**
-     * @brief Reset all counters and playhead to zero.
-     */
-    void reset();
-
-    // =====================================================================
-    // Parameters (thread-safe, can be called from any thread)
-    // =====================================================================
-
-    void setBpm(double bpm);
-    double getBpm() const { return m_bpm.load(std::memory_order_relaxed); }
-
-    void setBeatsPerBar(int beats);
-    int getBeatsPerBar() const { return m_beatsPerBar.load(std::memory_order_relaxed); }
-
-    /**
-     * @brief Set subdivision count per beat.
-     * Supported: 1 (quarter), 2 (eighth), 3 (triplet), 4 (sixteenth), 5, 7.
-     * The grid is automatically resized: totalSteps = beatsPerBar × subdivision.
-     */
-    void setSubdivision(int subdivision);
-    int getSubdivision() const { return m_subdivision.load(std::memory_order_relaxed); }
-
-    void setRunning(bool running) { m_running.store(running, std::memory_order_relaxed); }
-    bool isRunning() const { return m_running.load(std::memory_order_relaxed); }
-
-    // =====================================================================
-    // Grid Manipulation (thread-safe)
-    // =====================================================================
-
-    /**
-     * @brief Cycle a step: ACCENT → NORMAL → MUTE → ACCENT.
-     */
-    void cycleStep(int stepIndex);
-
-    /**
-     * @brief Set a specific step state.
-     */
-    void setStep(int stepIndex, StepType type);
-
-    /**
-     * @brief Get step state.
-     */
-    StepType getStep(int stepIndex) const;
-
-    /**
-     * @brief Get velocity for a step (1.0/0.6/0.0).
-     */
-    float getVelocity(int stepIndex) const;
-
-    /**
-     * @brief Total number of active steps in the current grid.
-     */
-    int getNumSteps() const { return m_numSteps.load(std::memory_order_relaxed); }
-
-    /**
-     * @brief Current playhead position.
-     */
-    int getCurrentStep() const { return m_currentStep.load(std::memory_order_relaxed); }
-
-    // =====================================================================
-    // Audio Processing (call from audio callback ONLY)
-    // =====================================================================
-
-    /**
-     * @brief Process one audio buffer block. Generates click trigger events.
-     *
-     * @param nFrames  Number of samples in this buffer.
-     * @param outEvents  Output: click events with sample-accurate offsets.
-     *
-     * The caller should iterate outEvents and synthesize clicks at the precise
-     * sampleOffset within the output buffer.
-     */
-    void processBlock(uint32_t nFrames, std::vector<ClickEvent>& outEvents);
-
-    // =====================================================================
-    // Snapshot (for UI thread)
-    // =====================================================================
-
-    /**
-     * @brief Get a thread-safe snapshot of the engine state.
-     */
-    EngineSnapshot getSnapshot() const;
-
-private:
-    // --- Timing state (audio thread only, except atomics) ---
-    uint32_t m_sampleRate = 48000;
-    uint64_t m_samplesUntilNextTick = 0;  ///< Countdown in samples
-    uint64_t m_totalSamplesProcessed = 0;
-
-    // --- Parameters (atomic for cross-thread safety) ---
-    std::atomic<double> m_bpm{120.0};
-    std::atomic<int>    m_beatsPerBar{4};
-    std::atomic<int>    m_subdivision{1};
-    std::atomic<bool>   m_running{false};
-    std::atomic<int>    m_currentStep{0};
-    std::atomic<int>    m_numSteps{4};
-
-    // --- Grid (atomic array for lock-free access) ---
-    std::atomic<uint8_t> m_steps[MAX_STEPS]{};
-
-    // --- Internal helpers ---
-    uint64_t calcSamplesPerTick() const;
-    void rebuildGrid();
+    double m_samplesUntilNextTickB = 0.0;
 };

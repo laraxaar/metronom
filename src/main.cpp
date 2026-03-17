@@ -62,11 +62,29 @@ int main(int, char**) {
 
         // --- Populate UIState from AudioEngine ---
         uiState.playing = audioEngine->isClickEnabled();
+        uiState.freePlay = audioEngine->isFreePlayActive();
         uiState.bpm = audioEngine->getLiveBpm();
         uiState.cpuLoad = audioEngine->getCpuLoad();
         uiState.accuracy = audioEngine->getAccuracy();
         uiState.scoreRank = audioEngine->getScoreRank();
         uiState.grooveProfile = audioEngine->getGrooveProfile();
+        uiState.playerBpm = audioEngine->getLivePlayerBpm();
+        uiState.playerStability = audioEngine->getLivePlayerStability();
+
+        // Live coach text (seqlock read)
+        {
+            std::string msg;
+            for (int tries = 0; tries < 3; ++tries) {
+                uint32_t s1 = audioEngine->getLiveCoachSeq();
+                if (s1 & 1u) continue;
+                const char* p = audioEngine->getLiveCoachText();
+                msg = p ? p : "";
+                uint32_t s2 = audioEngine->getLiveCoachSeq();
+                if (s1 == s2 && ((s2 & 1u) == 0)) break;
+            }
+            uiState.coachText = msg;
+            uiState.flowActive = audioEngine->isFlowActive();
+        }
 
         // Tuner data from TunerResult
         const auto& tunerResult = audioEngine->getTunerResult();
@@ -101,6 +119,30 @@ int main(int, char**) {
         uiState.clickPeak = mixer.clickPeak.load();
         uiState.inputPeak = mixer.inputPeak.load();
 
+        // Training data
+        uiState.ladderEnabled = audioEngine->isTrainingLadderEnabled();
+        uiState.silenceEnabled = audioEngine->isTrainingSilenceEnabled();
+        uiState.disappearingEnabled = audioEngine->isTrainingDisappearingEnabled();
+        uiState.grooveEnabled = audioEngine->isTrainingGrooveEnabled();
+        uiState.drunkenEnabled = audioEngine->isTrainingDrunkenEnabled();
+        uiState.bossEnabled = audioEngine->isTrainingBossEnabled();
+        uiState.ladderBars = audioEngine->getTrainingLadderBars();
+        uiState.ladderInc = audioEngine->getTrainingLadderInc();
+        uiState.silenceProb = audioEngine->getTrainingSilenceProb();
+        uiState.grooveMaxShiftMs = audioEngine->getTrainingGrooveMaxShiftMs();
+        uiState.disappearVisible = audioEngine->getTrainingDisappearVisible();
+        uiState.disappearHidden = audioEngine->getTrainingDisappearHidden();
+        uiState.drunkenLevel = audioEngine->getTrainingDrunkenLevel();
+        uiState.bossLevel = audioEngine->getBossLevel();
+        uiState.bossFlash = audioEngine->getBossFlash();
+        uiState.bossGameOver = audioEngine->isBossGameOver();
+        uiState.humanTestEnabled = audioEngine->isHumanTestEnabled();
+
+        // Polyrhythm (UI state mirrors requested config)
+        // Note: stored in AudioEngine atomics; expose via a lightweight heuristic:
+        // if enabled, UI will show the last selected ratio.
+        // (We keep UI state updated on event handling below.)
+
         // Mouse
         glfwGetCursorPos(window, &uiState.mouseX, &uiState.mouseY);
         uiState.mouseDown = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
@@ -115,6 +157,13 @@ int main(int, char**) {
         switch (event.type) {
             case UIEventType::TogglePlay:
                 audioEngine->setClickEnabled(!uiState.playing);
+                break;
+            case UIEventType::FreePlayToggle:
+                audioEngine->setFreePlayActive(!uiState.freePlay);
+                if (!uiState.freePlay) {
+                    // entering free play: mute click
+                    audioEngine->setClickEnabled(false);
+                }
                 break;
 
             case UIEventType::BpmChange:
@@ -155,6 +204,49 @@ int main(int, char**) {
 
             case UIEventType::GridStepCycle:
                 audioEngine->cycleGridStep(event.intValue);
+                break;
+
+            case UIEventType::TrainingToggle: {
+                // intValue: 1..4 (see UIRenderer)
+                auto id = static_cast<AudioEngine::TrainingModuleId>(event.intValue);
+                bool newState = false;
+                if (event.intValue == 1) newState = !audioEngine->isTrainingLadderEnabled();
+                else if (event.intValue == 2) newState = !audioEngine->isTrainingSilenceEnabled();
+                else if (event.intValue == 3) newState = !audioEngine->isTrainingDisappearingEnabled();
+                else if (event.intValue == 4) newState = !audioEngine->isTrainingGrooveEnabled();
+                else if (event.intValue == 5) newState = !audioEngine->isTrainingDrunkenEnabled();
+                else if (event.intValue == 6) newState = !audioEngine->isTrainingBossEnabled();
+                audioEngine->setTrainingEnabled(id, newState);
+                break;
+            }
+
+            case UIEventType::TrainingParamAdjust: {
+                auto pid = static_cast<AudioEngine::TrainingParamId>(event.intValue);
+                audioEngine->adjustTrainingParam(pid, event.value);
+                break;
+            }
+
+            case UIEventType::HumanTestToggle:
+                audioEngine->setHumanTestEnabled(!uiState.humanTestEnabled);
+                break;
+
+            case UIEventType::PolyrhythmSet: {
+                // intValue encodes X:Y as XYZ (e.g. 304 => 3:4, 708 => 7:8)
+                int code = event.intValue;
+                int x = code / 100;
+                int y = code % 100;
+                audioEngine->setPolyrhythmRatio(x, y);
+                uiState.polyEnabled = true;
+                uiState.polyX = x;
+                uiState.polyY = y;
+                break;
+            }
+
+            case UIEventType::PolyrhythmClear:
+                audioEngine->clearPolyrhythm();
+                uiState.polyEnabled = false;
+                uiState.polyX = 0;
+                uiState.polyY = 0;
                 break;
 
             case UIEventType::TunerModeChange: {

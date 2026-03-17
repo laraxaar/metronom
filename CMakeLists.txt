@@ -12,6 +12,12 @@ set(ENGINE_SOURCES
     src/AudioEngine.cpp
     src/MetronomeCore.cpp
     src/MetronomeEngine.cpp
+    src/TempoMap.cpp
+    src/AccuracyAnalyzer.cpp
+    src/AudioMixer.cpp
+    src/LiveTempoDetector.cpp
+    src/LiveCoach.cpp
+    src/CoachHistory.cpp
     src/PreciseTuner.cpp
     src/SmartOnsetDetector.cpp
     src/FreePlayTracker.cpp

@@ -363,9 +363,9 @@ UIEvent UIRenderer::render(const UIState& state) {
     drawText(16, 10, "M E T R O N O M", 0.38f, Color::Accent[0], Color::Accent[1], Color::Accent[2]);
 
     // Tab buttons
-    const char* tabs[] = { "METRONOME", "TUNER", "MIXER" };
+    const char* tabs[] = { "METRONOME", "TUNER", "MIXER", "COACH" };
     float tabX = 260;
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < 4; ++i) {
         float tw = 120;
         bool active = (m_activeTab == i);
         bool hovered = isHovered(tabX, 0, tw, navH, state);
@@ -383,6 +383,11 @@ UIEvent UIRenderer::render(const UIState& state) {
             m_activeTab = i;
         }
         tabX += tw + 8;
+    }
+
+    // Training drawer button (right side)
+    if (drawSmallButton(W - 210, 10, 90, 28, "TRAIN", m_trainingDrawerOpen, state)) {
+        m_trainingDrawerOpen = !m_trainingDrawerOpen;
     }
 
     // CPU load
@@ -410,6 +415,23 @@ UIEvent UIRenderer::render(const UIState& state) {
     } else if (m_activeTab == 2) {
         UIEvent mixerEvt = renderMixer(state, pad, sectionY, W - pad * 2, sectionH);
         if (mixerEvt.type != UIEventType::None) event = mixerEvt;
+    } else if (m_activeTab == 3) {
+        renderCoachTab(state, pad, sectionY, W - pad * 2, sectionH);
+    }
+
+    // Training drawer overlay (all tabs)
+    UIEvent drawerEvt = renderTrainingDrawer(state, W, H);
+    if (drawerEvt.type != UIEventType::None) event = drawerEvt;
+
+    // Boss flash overlay (screen flash / blackout cue)
+    if (state.bossFlash > 0.001f) {
+        const float a = (std::min)(1.0f, state.bossFlash);
+        drawRect(0, 0, W, H, 1.0f, 1.0f, 1.0f, a * 0.8f);
+    }
+    if (state.bossGameOver) {
+        drawRect(0, 0, W, H, 0.0f, 0.0f, 0.0f, 0.65f);
+        drawTextCentered(W / 2.0f, H / 2.0f - 24, "GAME OVER", 1.2f, Color::Red[0], Color::Red[1], Color::Red[2]);
+        drawTextCentered(W / 2.0f, H / 2.0f + 36, "Accuracy < 70%", 0.35f, Color::TextBright[0], Color::TextBright[1], Color::TextBright[2]);
     }
 
     return event;
@@ -459,8 +481,14 @@ UIEvent UIRenderer::renderHeader(const UIState& state, float x, float y, float w
         event.type = UIEventType::TogglePlay;
     }
 
+    // --- FREE PLAY toggle ---
+    float fpBtnX = playX + 134;
+    if (drawButton(fpBtnX, y + 18, 120, 82, state.freePlay ? "FREE ON" : "FREE", state.freePlay, state, 0.40f)) {
+        event.type = UIEventType::FreePlayToggle;
+    }
+
     // --- Time Signature ---
-    float tsX = playX + 140;
+    float tsX = fpBtnX + 134;
     drawText(tsX, y + 10, "TIME SIG", 0.22f, Color::TextDim[0], Color::TextDim[1], Color::TextDim[2]);
     const int sigs[] = {3, 4, 5, 6, 7};
     for (int i = 0; i < 5; ++i) {
@@ -490,6 +518,37 @@ UIEvent UIRenderer::renderHeader(const UIState& state, float x, float y, float w
     accStr << std::fixed << std::setprecision(0) << state.accuracy << "%";
     drawText(x + accX + 80, y + 56, accStr.str(), 0.32f, Color::TextDim[0], Color::TextDim[1], Color::TextDim[2]);
 
+    // --- Live player tempo (Free Play) ---
+    float fpX = x + w - 360;
+    drawText(fpX, y + 82, "YOUR TEMPO", 0.20f, Color::TextDim[0], Color::TextDim[1], Color::TextDim[2]);
+    std::ostringstream pb;
+    pb << std::fixed << std::setprecision(1) << state.playerBpm << " BPM";
+    // Stability color: green stable, red chaos
+    const float stab = std::clamp(state.playerStability / 100.0f, 0.0f, 1.0f);
+    const float rr = (1.0f - stab) * Color::Red[0] + stab * Color::Green[0];
+    const float gg = (1.0f - stab) * Color::Red[1] + stab * Color::Green[1];
+    const float bb = (1.0f - stab) * Color::Red[2] + stab * Color::Green[2];
+    drawText(fpX, y + 98, pb.str(), 0.32f, rr, gg, bb);
+    std::ostringstream st;
+    st << "Stability " << std::fixed << std::setprecision(0) << state.playerStability << "%";
+    drawText(fpX + 140, y + 100, st.str(), 0.22f, Color::TextMuted[0], Color::TextMuted[1], Color::TextMuted[2]);
+
+    // --- Coach panel ---
+    float coachX = x + 24;
+    float coachY = y + 92;
+    if (!state.coachText.empty()) {
+        // Flow indicator
+        if (state.flowActive) {
+            drawCircle(coachX - 10, coachY + 10, 6, Color::Green[0], Color::Green[1], Color::Green[2], 0.9f);
+            drawText(coachX + 2, coachY, "FLOW", 0.22f, Color::Green[0], Color::Green[1], Color::Green[2]);
+        }
+        drawText(coachX + (state.flowActive ? 54 : 0), coachY, state.coachText, 0.24f,
+                 Color::TextBright[0], Color::TextBright[1], Color::TextBright[2]);
+    } else if (state.flowActive) {
+        drawCircle(coachX - 10, coachY + 10, 6, Color::Green[0], Color::Green[1], Color::Green[2], 0.9f);
+        drawText(coachX + 2, coachY, "FLOW", 0.22f, Color::Green[0], Color::Green[1], Color::Green[2]);
+    }
+
     return event;
 }
 
@@ -500,7 +559,8 @@ UIEvent UIRenderer::renderHeader(const UIState& state, float x, float y, float w
 UIEvent UIRenderer::renderMatrix(const UIState& state, float x, float y, float w, float h) {
     UIEvent event;
 
-    drawRoundedRect(x, y, w, (std::min)(h, 200.0f), 10, Color::Panel[0], Color::Panel[1], Color::Panel[2]);
+    float panelH = (std::min)(h, 320.0f);
+    drawRoundedRect(x, y, w, panelH, 10, Color::Panel[0], Color::Panel[1], Color::Panel[2]);
 
     drawText(x + 16, y + 12, "RHYTHM GRID", 0.26f, Color::TextDim[0], Color::TextDim[1], Color::TextDim[2]);
 
@@ -570,6 +630,141 @@ UIEvent UIRenderer::renderMatrix(const UIState& state, float x, float y, float w
     drawText(startX + 96, legY - 2, "Normal", 0.20f, Color::TextDim[0], Color::TextDim[1], Color::TextDim[2]);
     drawCircle(startX + 166, legY + 6, 5, 0.25f, 0.25f, 0.30f);
     drawText(startX + 176, legY - 2, "Muted", 0.20f, Color::TextDim[0], Color::TextDim[1], Color::TextDim[2]);
+
+    // =================================================================
+    // Training panel
+    // =================================================================
+    float trainY = legY + 26;
+    drawText(x + 16, trainY, "TRAINING", 0.22f, Color::TextDim[0], Color::TextDim[1], Color::TextDim[2]);
+
+    float bx = x + 16;
+    float by = trainY + 22;
+    float bw = 120;
+    float bh = 28;
+
+    if (drawSmallButton(bx, by, bw, bh, "LADDER", state.ladderEnabled, state)) {
+        event.type = UIEventType::TrainingToggle; event.intValue = 1;
+    }
+    if (drawSmallButton(bx + bw + 8, by, 26, bh, "-", false, state)) {
+        event.type = UIEventType::TrainingParamAdjust; event.intValue = 100; event.value = -1.0f;
+    }
+    if (drawSmallButton(bx + bw + 40, by, 26, bh, "+", false, state)) {
+        event.type = UIEventType::TrainingParamAdjust; event.intValue = 100; event.value = 1.0f;
+    }
+    {
+        std::ostringstream s; s << state.ladderBars << " bars  +" << std::fixed << std::setprecision(1) << state.ladderInc;
+        drawText(bx + bw + 76, by + 6, s.str(), 0.20f, Color::TextMuted[0], Color::TextMuted[1], Color::TextMuted[2]);
+    }
+
+    float row2Y = by + 38;
+    if (drawSmallButton(bx, row2Y, bw, bh, "SILENCE", state.silenceEnabled, state)) {
+        event.type = UIEventType::TrainingToggle; event.intValue = 2;
+    }
+    if (drawSmallButton(bx + bw + 8, row2Y, 26, bh, "-", false, state)) {
+        event.type = UIEventType::TrainingParamAdjust; event.intValue = 110; event.value = -0.05f;
+    }
+    if (drawSmallButton(bx + bw + 40, row2Y, 26, bh, "+", false, state)) {
+        event.type = UIEventType::TrainingParamAdjust; event.intValue = 110; event.value = 0.05f;
+    }
+    {
+        std::ostringstream s; s << "p=" << std::fixed << std::setprecision(2) << state.silenceProb;
+        drawText(bx + bw + 76, row2Y + 6, s.str(), 0.20f, Color::TextMuted[0], Color::TextMuted[1], Color::TextMuted[2]);
+    }
+
+    float row3Y = row2Y + 38;
+    if (drawSmallButton(bx, row3Y, bw, bh, "DISAPPEAR", state.disappearingEnabled, state)) {
+        event.type = UIEventType::TrainingToggle; event.intValue = 3;
+    }
+    if (drawSmallButton(bx + bw + 8, row3Y, 26, bh, "-", false, state)) {
+        event.type = UIEventType::TrainingParamAdjust; event.intValue = 130; event.value = -1.0f;
+    }
+    if (drawSmallButton(bx + bw + 40, row3Y, 26, bh, "+", false, state)) {
+        event.type = UIEventType::TrainingParamAdjust; event.intValue = 130; event.value = 1.0f;
+    }
+    if (drawSmallButton(bx + bw + 72, row3Y, 26, bh, "-", false, state)) {
+        event.type = UIEventType::TrainingParamAdjust; event.intValue = 131; event.value = -1.0f;
+    }
+    if (drawSmallButton(bx + bw + 104, row3Y, 26, bh, "+", false, state)) {
+        event.type = UIEventType::TrainingParamAdjust; event.intValue = 131; event.value = 1.0f;
+    }
+    {
+        std::ostringstream s; s << state.disappearVisible << " on / " << state.disappearHidden << " off";
+        drawText(bx + bw + 140, row3Y + 6, s.str(), 0.20f, Color::TextMuted[0], Color::TextMuted[1], Color::TextMuted[2]);
+    }
+
+    float row4Y = row3Y + 38;
+    if (drawSmallButton(bx, row4Y, bw, bh, "GROOVE", state.grooveEnabled, state)) {
+        event.type = UIEventType::TrainingToggle; event.intValue = 4;
+    }
+    if (drawSmallButton(bx + bw + 8, row4Y, 26, bh, "-", false, state)) {
+        event.type = UIEventType::TrainingParamAdjust; event.intValue = 120; event.value = -0.5f;
+    }
+    if (drawSmallButton(bx + bw + 40, row4Y, 26, bh, "+", false, state)) {
+        event.type = UIEventType::TrainingParamAdjust; event.intValue = 120; event.value = 0.5f;
+    }
+    {
+        std::ostringstream s; s << std::fixed << std::setprecision(1) << state.grooveMaxShiftMs << " ms";
+        drawText(bx + bw + 76, row4Y + 6, s.str(), 0.20f, Color::TextMuted[0], Color::TextMuted[1], Color::TextMuted[2]);
+    }
+
+    float row5Y = row4Y + 38;
+    if (drawSmallButton(bx, row5Y, bw, bh, "HUMAN TEST", state.humanTestEnabled, state)) {
+        event.type = UIEventType::HumanTestToggle;
+    }
+
+    float row6Y = row5Y + 38;
+    if (drawSmallButton(bx, row6Y, bw, bh, "DRUNKEN", state.drunkenEnabled, state)) {
+        event.type = UIEventType::TrainingToggle; event.intValue = 5;
+    }
+    if (drawSmallButton(bx + bw + 8, row6Y, 26, bh, "-", false, state)) {
+        event.type = UIEventType::TrainingParamAdjust; event.intValue = 140; event.value = -0.05f;
+    }
+    if (drawSmallButton(bx + bw + 40, row6Y, 26, bh, "+", false, state)) {
+        event.type = UIEventType::TrainingParamAdjust; event.intValue = 140; event.value = 0.05f;
+    }
+    {
+        std::ostringstream s; s << "lvl=" << std::fixed << std::setprecision(2) << state.drunkenLevel;
+        drawText(bx + bw + 76, row6Y + 6, s.str(), 0.20f, Color::TextMuted[0], Color::TextMuted[1], Color::TextMuted[2]);
+    }
+
+    float row7Y = row6Y + 38;
+    if (drawSmallButton(bx, row7Y, bw, bh, "RHYTHM BOSS", state.bossEnabled, state)) {
+        event.type = UIEventType::TrainingToggle; event.intValue = 6;
+    }
+    if (drawSmallButton(bx + bw + 8, row7Y, 26, bh, "-", false, state)) {
+        event.type = UIEventType::TrainingParamAdjust; event.intValue = 150; event.value = -0.05f;
+    }
+    if (drawSmallButton(bx + bw + 40, row7Y, 26, bh, "+", false, state)) {
+        event.type = UIEventType::TrainingParamAdjust; event.intValue = 150; event.value = 0.05f;
+    }
+    {
+        std::ostringstream s; s << "lvl=" << std::fixed << std::setprecision(2) << state.bossLevel;
+        drawText(bx + bw + 76, row7Y + 6, s.str(), 0.20f, Color::TextMuted[0], Color::TextMuted[1], Color::TextMuted[2]);
+    }
+
+    // =================================================================
+    // Polyrhythm trainer
+    // =================================================================
+    float polyY = row7Y + 40;
+    drawText(x + 16, polyY, "POLYRHYTHM", 0.22f, Color::TextDim[0], Color::TextDim[1], Color::TextDim[2]);
+    float py2 = polyY + 22;
+    if (drawSmallButton(bx, py2, 70, bh, "3:4", state.polyEnabled && state.polyX == 3 && state.polyY == 4, state)) {
+        event.type = UIEventType::PolyrhythmSet; event.intValue = 304; // 3:4
+    }
+    if (drawSmallButton(bx + 78, py2, 70, bh, "5:4", state.polyEnabled && state.polyX == 5 && state.polyY == 4, state)) {
+        event.type = UIEventType::PolyrhythmSet; event.intValue = 504; // 5:4
+    }
+    if (drawSmallButton(bx + 156, py2, 70, bh, "7:8", state.polyEnabled && state.polyX == 7 && state.polyY == 8, state)) {
+        event.type = UIEventType::PolyrhythmSet; event.intValue = 708; // 7:8
+    }
+    if (drawSmallButton(bx + 234, py2, 90, bh, "CLEAR", false, state)) {
+        event.type = UIEventType::PolyrhythmClear;
+    }
+    if (state.polyEnabled) {
+        std::ostringstream s;
+        s << "Active: " << state.polyX << ":" << state.polyY;
+        drawText(bx + 332, py2 + 6, s.str(), 0.20f, Color::TextMuted[0], Color::TextMuted[1], Color::TextMuted[2]);
+    }
 
     return event;
 }

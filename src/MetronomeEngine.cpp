@@ -1,4 +1,203 @@
 #include "MetronomeEngine.h"
+#include <algorithm>
+#include <cmath>
+
+static MetronomeEngine::StepState clampState(int v) {
+    if (v <= 0) return MetronomeEngine::StepState::ACCENT;
+    if (v == 1) return MetronomeEngine::StepState::NORMAL;
+    return MetronomeEngine::StepState::MUTE;
+}
+
+MetronomeEngine::MetronomeEngine() {
+    // default 4/4, quarters
+    setSubdivisionParts(1);
+    setBeatsPerBar(4);
+    setBpm(120.0);
+    reset();
+    // default pattern: first step accent, others normal
+    for (int i = 0; i < MAX_STEPS; ++i) {
+        m_stepStates[i].store(static_cast<uint8_t>(StepState::MUTE), std::memory_order_relaxed);
+    }
+    int steps = m_stepsPerBar.load(std::memory_order_relaxed);
+    if (steps > 0) {
+        m_stepStates[0].store(static_cast<uint8_t>(StepState::ACCENT), std::memory_order_relaxed);
+        for (int i = 1; i < steps; ++i) {
+            m_stepStates[i].store(static_cast<uint8_t>(StepState::NORMAL), std::memory_order_relaxed);
+        }
+    }
+}
+
+void MetronomeEngine::setSampleRate(uint32_t sampleRate) {
+    if (sampleRate == 0) sampleRate = 48000;
+    m_sampleRate.store(sampleRate, std::memory_order_relaxed);
+}
+
+void MetronomeEngine::setBpm(double bpm) {
+    if (!std::isfinite(bpm)) bpm = 120.0;
+    bpm = std::clamp(bpm, 10.0, 1000.0);
+    m_bpm.store(bpm, std::memory_order_relaxed);
+}
+
+int MetronomeEngine::coerceSubdivisionParts(int parts) {
+    // allowed: 1,2,3,4,5,7. Anything else -> nearest sensible.
+    switch (parts) {
+        case 1: case 2: case 3: case 4: case 5: case 7: return parts;
+        default: break;
+    }
+    if (parts <= 1) return 1;
+    if (parts == 6) return 5;
+    if (parts < 7) return 7;
+    // beyond 7: keep at 7 (requested list is strict)
+    return 7;
+}
+
+void MetronomeEngine::setBeatsPerBar(int beatsPerBar) {
+    if (beatsPerBar < 1) beatsPerBar = 1;
+    if (beatsPerBar > 64) beatsPerBar = 64;
+    m_beatsPerBar.store(beatsPerBar, std::memory_order_relaxed);
+
+    int parts = m_partsPerQuarter.load(std::memory_order_relaxed);
+    int newSteps = std::clamp(beatsPerBar * parts, 1, MAX_STEPS);
+    rebuildGridForNewSteps(newSteps);
+}
+
+void MetronomeEngine::setSubdivisionParts(int partsPerQuarter) {
+    partsPerQuarter = coerceSubdivisionParts(partsPerQuarter);
+    m_partsPerQuarter.store(partsPerQuarter, std::memory_order_relaxed);
+
+    int beats = m_beatsPerBar.load(std::memory_order_relaxed);
+    int newSteps = std::clamp(beats * partsPerQuarter, 1, MAX_STEPS);
+    rebuildGridForNewSteps(newSteps);
+}
+
+void MetronomeEngine::rebuildGridForNewSteps(int newStepsPerBar) {
+    int oldSteps = m_stepsPerBar.load(std::memory_order_relaxed);
+    if (newStepsPerBar == oldSteps) return;
+
+    // Snapshot old states (non-RT function, intended to be called from control thread).
+    uint8_t oldBuf[MAX_STEPS];
+    for (int i = 0; i < MAX_STEPS; ++i) {
+        oldBuf[i] = m_stepStates[i].load(std::memory_order_relaxed);
+    }
+
+    // Resample states proportionally.
+    for (int i = 0; i < newStepsPerBar; ++i) {
+        int src = (oldSteps > 0) ? ((i * oldSteps) / newStepsPerBar) : 0;
+        if (src < 0) src = 0;
+        if (src >= oldSteps) src = (oldSteps > 0) ? (oldSteps - 1) : 0;
+        m_stepStates[i].store(oldBuf[src], std::memory_order_relaxed);
+    }
+    for (int i = newStepsPerBar; i < MAX_STEPS; ++i) {
+        m_stepStates[i].store(static_cast<uint8_t>(StepState::MUTE), std::memory_order_relaxed);
+    }
+
+    m_stepsPerBar.store(newStepsPerBar, std::memory_order_relaxed);
+
+    int cur = m_currentStep.load(std::memory_order_relaxed);
+    if (cur >= newStepsPerBar) m_currentStep.store(0, std::memory_order_relaxed);
+}
+
+void MetronomeEngine::setStepState(int stepIndex, StepState state) {
+    int steps = m_stepsPerBar.load(std::memory_order_relaxed);
+    if (stepIndex < 0 || stepIndex >= steps) return;
+    m_stepStates[stepIndex].store(static_cast<uint8_t>(state), std::memory_order_relaxed);
+}
+
+MetronomeEngine::StepState MetronomeEngine::getStepState(int stepIndex) const {
+    int steps = m_stepsPerBar.load(std::memory_order_relaxed);
+    if (stepIndex < 0 || stepIndex >= steps) return StepState::MUTE;
+    uint8_t v = m_stepStates[stepIndex].load(std::memory_order_relaxed);
+    return clampState(static_cast<int>(v));
+}
+
+void MetronomeEngine::cycleStepState(int stepIndex) {
+    int steps = m_stepsPerBar.load(std::memory_order_relaxed);
+    if (stepIndex < 0 || stepIndex >= steps) return;
+
+    uint8_t oldV = m_stepStates[stepIndex].load(std::memory_order_relaxed);
+    int s = static_cast<int>(oldV) % 3;
+    int next = (s + 1) % 3;
+    m_stepStates[stepIndex].store(static_cast<uint8_t>(next), std::memory_order_relaxed);
+}
+
+void MetronomeEngine::reset() {
+    m_samplesUntilNextTick = 0.0;
+    m_currentStep.store(0, std::memory_order_relaxed);
+}
+
+size_t MetronomeEngine::processBlock(uint32_t nFrames, Event* outEvents, size_t outCapacity) {
+    if (!outEvents || outCapacity == 0 || nFrames == 0) return 0;
+
+    const uint32_t sr = m_sampleRate.load(std::memory_order_relaxed);
+    const double bpm = m_bpm.load(std::memory_order_relaxed);
+    const int stepsPerBar = m_stepsPerBar.load(std::memory_order_relaxed);
+    const int partsPerQuarter = m_partsPerQuarter.load(std::memory_order_relaxed);
+
+    if (sr == 0 || bpm <= 0.0 || stepsPerBar <= 0 || partsPerQuarter <= 0) return 0;
+
+    // One quarter note duration in samples.
+    const double samplesPerQuarter = (static_cast<double>(sr) * 60.0) / bpm;
+    const double samplesPerStep = samplesPerQuarter / static_cast<double>(partsPerQuarter);
+
+    // Guard against extreme values.
+    const double stepLen = std::clamp(samplesPerStep, 1.0, 1.0e9);
+
+    size_t written = 0;
+
+    // We maintain "samples until next tick". Decrease it by each processed sample offset.
+    // When it reaches <= 0, emit tick(s) and push it forward by stepLen.
+    double remaining = m_samplesUntilNextTick;
+
+    // If starting fresh or after reset, schedule immediate tick at offset 0.
+    if (!std::isfinite(remaining)) remaining = 0.0;
+
+    uint32_t frame = 0;
+    while (frame < nFrames) {
+        // Next tick inside this block?
+        if (remaining > 0.0) {
+            uint32_t advance = static_cast<uint32_t>(std::min<double>(remaining, static_cast<double>(nFrames - frame)));
+            frame += advance;
+            remaining -= static_cast<double>(advance);
+            continue;
+        }
+
+        // Tick at current frame.
+        if (written < outCapacity) {
+            int step = m_currentStep.load(std::memory_order_relaxed);
+            if (step < 0 || step >= stepsPerBar) step = 0;
+            StepState st = getStepState(step);
+            outEvents[written++] = Event{
+                frame,
+                static_cast<uint16_t>(step),
+                st,
+                stateToVelocity(st)
+            };
+        } else {
+            // Capacity exceeded: still advance playhead to keep timing correct.
+        }
+
+        int nextStep = m_currentStep.load(std::memory_order_relaxed) + 1;
+        if (nextStep >= stepsPerBar) nextStep = 0;
+        m_currentStep.store(nextStep, std::memory_order_relaxed);
+
+        remaining += stepLen;
+    }
+
+    // Carry remainder into next block.
+    // Keep it in [0, stepLen) to avoid runaway drift.
+    if (remaining < 0.0) {
+        // If bpm changed aggressively, we might be "late"; bring it back by adding stepLen.
+        remaining = std::fmod(remaining, stepLen);
+        if (remaining < 0.0) remaining += stepLen;
+    } else if (remaining >= stepLen) {
+        remaining = std::fmod(remaining, stepLen);
+    }
+    m_samplesUntilNextTick = remaining;
+
+    return written;
+}
+
+#include "MetronomeEngine.h"
 #include <cmath>
 #include <algorithm>
 

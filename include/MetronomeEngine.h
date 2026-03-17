@@ -173,4 +173,101 @@ public:
 
     // =====================================================================
     // Parameters (thread-safe, can be called from any thread)
-    // ===============
+    // =====================================================================
+
+    void setBpm(double bpm);
+    double getBpm() const { return m_bpm.load(std::memory_order_relaxed); }
+
+    void setBeatsPerBar(int beats);
+    int getBeatsPerBar() const { return m_beatsPerBar.load(std::memory_order_relaxed); }
+
+    /**
+     * @brief Set subdivision count per beat.
+     * Supported: 1 (quarter), 2 (eighth), 3 (triplet), 4 (sixteenth), 5, 7.
+     * The grid is automatically resized: totalSteps = beatsPerBar × subdivision.
+     */
+    void setSubdivision(int subdivision);
+    int getSubdivision() const { return m_subdivision.load(std::memory_order_relaxed); }
+
+    void setRunning(bool running) { m_running.store(running, std::memory_order_relaxed); }
+    bool isRunning() const { return m_running.load(std::memory_order_relaxed); }
+
+    // =====================================================================
+    // Grid Manipulation (thread-safe)
+    // =====================================================================
+
+    /**
+     * @brief Cycle a step: ACCENT → NORMAL → MUTE → ACCENT.
+     */
+    void cycleStep(int stepIndex);
+
+    /**
+     * @brief Set a specific step state.
+     */
+    void setStep(int stepIndex, StepType type);
+
+    /**
+     * @brief Get step state.
+     */
+    StepType getStep(int stepIndex) const;
+
+    /**
+     * @brief Get velocity for a step (1.0/0.6/0.0).
+     */
+    float getVelocity(int stepIndex) const;
+
+    /**
+     * @brief Total number of active steps in the current grid.
+     */
+    int getNumSteps() const { return m_numSteps.load(std::memory_order_relaxed); }
+
+    /**
+     * @brief Current playhead position.
+     */
+    int getCurrentStep() const { return m_currentStep.load(std::memory_order_relaxed); }
+
+    // =====================================================================
+    // Audio Processing (call from audio callback ONLY)
+    // =====================================================================
+
+    /**
+     * @brief Process one audio buffer block. Generates click trigger events.
+     *
+     * @param nFrames  Number of samples in this buffer.
+     * @param outEvents  Output: click events with sample-accurate offsets.
+     *
+     * The caller should iterate outEvents and synthesize clicks at the precise
+     * sampleOffset within the output buffer.
+     */
+    void processBlock(uint32_t nFrames, std::vector<ClickEvent>& outEvents);
+
+    // =====================================================================
+    // Snapshot (for UI thread)
+    // =====================================================================
+
+    /**
+     * @brief Get a thread-safe snapshot of the engine state.
+     */
+    EngineSnapshot getSnapshot() const;
+
+private:
+    // --- Timing state (audio thread only, except atomics) ---
+    uint32_t m_sampleRate = 48000;
+    uint64_t m_samplesUntilNextTick = 0;  ///< Countdown in samples
+    uint64_t m_totalSamplesProcessed = 0;
+
+    // --- Parameters (atomic for cross-thread safety) ---
+    std::atomic<double> m_bpm{120.0};
+    std::atomic<int>    m_beatsPerBar{4};
+    std::atomic<int>    m_subdivision{1};
+    std::atomic<bool>   m_running{false};
+    std::atomic<int>    m_currentStep{0};
+    std::atomic<int>    m_numSteps{4};
+
+    // --- Grid (atomic array for lock-free access) ---
+    std::atomic<uint8_t> m_steps[MAX_STEPS]{};
+
+    // --- Internal helpers ---
+    uint64_t calcSamplesPerTick() const;
+    void rebuildGrid();
+};

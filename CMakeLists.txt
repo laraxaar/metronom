@@ -11,6 +11,7 @@ include_directories(include)
 set(ENGINE_SOURCES
     src/AudioEngine.cpp
     src/MetronomeCore.cpp
+    src/MetronomeEngine.cpp
     src/PreciseTuner.cpp
     src/SmartOnsetDetector.cpp
     src/FreePlayTracker.cpp

@@ -16,6 +16,7 @@
 #include "TunerWorker.h"
 #include "RhythmGrid.h"
 #include "MixerState.h"
+#include "MetronomeEngine.h"
 #include <vector>
 #include <memory>
 #include <atomic>
@@ -106,7 +107,7 @@ public:
     // --- RhythmGrid ---
     RhythmGrid& getGrid() { return m_grid; }
     const RhythmGrid& getGrid() const { return m_grid; }
-    void cycleGridStep(int stepIndex) { m_grid.cycleStep(stepIndex); }
+    void cycleGridStep(int stepIndex);
     void setGridSubdivision(int subdiv);
     GridSnapshot getGridSnapshot() const { return m_grid.getSnapshot(); }
 
@@ -128,12 +129,18 @@ public:
     /**
      * @brief Set the rhythmic subdivision.
      */
-    void setSubdivision(int sub) { m_metronomeCore.setSubdivision(sub); }
+    void setSubdivision(int sub) {
+        m_metronomeCore.setSubdivision(sub);
+        m_metronomeEngine.setSubdivisionParts(sub);
+    }
     
     /**
      * @brief Set the time signature top (number of beats in a bar).
      */
-    void setTimeSignature(int top) { m_metronomeCore.setTimeSignature(top); }
+    void setTimeSignature(int top) {
+        m_metronomeCore.setTimeSignature(top);
+        m_metronomeEngine.setBeatsPerBar(top);
+    }
 
     /**
      * @brief Set the groove intensity.
@@ -262,6 +269,9 @@ private:
     
     // Core timing engine
     MetronomeCore m_metronomeCore;
+
+    // Sample-accurate rhythm engine (events + atomic grid)
+    MetronomeEngine m_metronomeEngine;
     
     // Input processing pipeline (DC filter + RingBuffer)
     InputProcessor m_inputProcessor;
@@ -320,6 +330,6 @@ private:
     std::vector<float> m_accentSample;
 
     // Helper for sample processing
-    void synthesizeClick(float* buffer, uint32_t nFrames, const std::vector<uint32_t>& offsets, const std::vector<int>& indices);
+    void synthesizeClick(float* buffer, uint32_t nFrames, const MetronomeEngine::Event* events, size_t numEvents);
     void processInputAnalysis(const float* input, uint32_t nFrames);
 };

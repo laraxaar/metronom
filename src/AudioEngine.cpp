@@ -51,6 +51,8 @@ AudioEngine::AudioEngine()
     m_params.sampleRate = 48000;  // Default to 48kHz for bass accuracy
     m_params.bufferSize = 256;    // Low latency default
     m_requestedSampleRate = 48000;
+    m_metronomeEngine.setSampleRate(m_params.sampleRate);
+    m_metronomeEngine.setBpm(m_currentBpm.load(std::memory_order_relaxed));
 }
 
 AudioEngine::~AudioEngine() {
@@ -120,6 +122,9 @@ bool AudioEngine::initialize(const std::string& configPath) {
     m_params.sampleRate = sampleRate;
     m_params.numOutputChannels = outputParams.nChannels;
     m_params.numInputChannels = inputParams.nChannels;
+
+    // Update rhythm engine sample rate
+    m_metronomeEngine.setSampleRate(sampleRate);
 
     unsigned int bufferFrames = m_params.bufferSize;
 
@@ -292,6 +297,7 @@ void AudioEngine::setSampleRate(uint32_t sampleRate) {
 void AudioEngine::setBpm(double bpm) {
     m_currentBpm.store(bpm);
     m_metronomeCore.setBpm(bpm);
+    m_metronomeEngine.setBpm(bpm);
 }
 
 void AudioEngine::addModule(std::unique_ptr<IMetronomeModule> module) {
@@ -330,14 +336,14 @@ void AudioEngine::audioCallback(const float* input, float* output, uint32_t nFra
         m_clickTail.clear();
     }
 
-    // 2. Process timing
-    std::vector<uint32_t> beatOffsets;
-    std::vector<int> beatIndices;
-    m_metronomeCore.process(nFrames, m_params.sampleRate, beatOffsets, beatIndices);
+    // 2. Process timing (sample-accurate, no allocations)
+    MetronomeEngine::Event events[MetronomeEngine::MAX_EVENTS];
+    const size_t numEvents = m_metronomeEngine.processBlock(
+        nFrames, events, MetronomeEngine::MAX_EVENTS);
 
-    // 3. Synthesize click based on offsets (only if click is enabled)
-    if (m_clickEnabled.load()) {
-        synthesizeClick(output, nFrames, beatOffsets, beatIndices);
+    // 3. Synthesize click based on events (only if click is enabled)
+    if (m_clickEnabled.load(std::memory_order_relaxed) && numEvents > 0) {
+        synthesizeClick(output, nFrames, events, numEvents);
     }
 
     // 4. Process Polyrhythms
@@ -401,7 +407,7 @@ void AudioEngine::audioCallback(const float* input, float* output, uint32_t nFra
         data.peakInput = m_inputProcessor.getPeakLevel();
         data.peakOutput = m_outputPeak.load();
         data.cpuLoad = m_cpuLoad.load();
-        data.currentBeatIndex = m_metronomeCore.getCurrentBeatIndex();
+        data.currentBeatIndex = m_metronomeEngine.getCurrentStep();
         // Grid snapshot for UI
         {
             auto snap = m_grid.getSnapshot();
@@ -443,10 +449,11 @@ void AudioEngine::audioCallback(const float* input, float* output, uint32_t nFra
         }
     }
 
-    // 7. Notify modules of beats
-    for (uint32_t offset : beatOffsets) {
+    // 7. Notify modules of beats (tick events)
+    for (size_t i = 0; i < numEvents; ++i) {
+        const uint32_t offset = events[i].sampleOffset;
         for (auto& module : m_modules) {
-            module->onBeat(0, offset); 
+            module->onBeat(0, offset);
         }
     }
 
@@ -505,7 +512,28 @@ void AudioEngine::setBeatPattern(const std::vector<int>& pattern) {
     // Legacy compatibility: map ints to grid states
     for (size_t i = 0; i < pattern.size() && i < (size_t)m_grid.getNumSteps(); ++i) {
         m_grid.setStepState(static_cast<int>(i), static_cast<StepState>(pattern[i]));
+        // Mirror into the new engine grid (StepState enums differ)
+        MetronomeEngine::StepState st = MetronomeEngine::StepState::NORMAL;
+        switch (static_cast<StepState>(pattern[i])) {
+            case StepState::Accent: st = MetronomeEngine::StepState::ACCENT; break;
+            case StepState::Normal: st = MetronomeEngine::StepState::NORMAL; break;
+            case StepState::Muted:  st = MetronomeEngine::StepState::MUTE; break;
+        }
+        m_metronomeEngine.setStepState(static_cast<int>(i), st);
     }
+}
+
+void AudioEngine::cycleGridStep(int stepIndex) {
+    m_grid.cycleStep(stepIndex);
+    // Mirror into the new engine grid
+    StepState s = m_grid.getStepState(stepIndex);
+    MetronomeEngine::StepState st = MetronomeEngine::StepState::NORMAL;
+    switch (s) {
+        case StepState::Accent: st = MetronomeEngine::StepState::ACCENT; break;
+        case StepState::Normal: st = MetronomeEngine::StepState::NORMAL; break;
+        case StepState::Muted:  st = MetronomeEngine::StepState::MUTE; break;
+    }
+    m_metronomeEngine.setStepState(stepIndex, st);
 }
 
 void AudioEngine::setGridSubdivision(int subdiv) {
@@ -517,6 +545,8 @@ void AudioEngine::setGridSubdivision(int subdiv) {
     m_grid.setSubdivision(s);
     // Update MetronomeCore subdivision to match
     m_metronomeCore.setSubdivision(subdiv / 4);
+    // Update new engine subdivision parts: 4->1, 8->2, 12->3, 16->4, 20->5
+    m_metronomeEngine.setSubdivisionParts(subdiv / 4);
 }
 
 void AudioEngine::setMonitoring(bool enabled, float gain) {

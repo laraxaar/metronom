@@ -20,6 +20,10 @@ set(ENGINE_SOURCES
     src/OfflineRenderer.cpp
     src/SettingsManager.cpp
     src/MidiSyncManager.cpp
+    src/UIController.cpp
+    src/InputProcessor.cpp
+    src/DeviceManager.cpp
+    src/TunerWorker.cpp
 )
 
 # Plugins
@@ -32,18 +36,40 @@ set(PLUGIN_SOURCES
 add_executable(metronome_engine
     ${ENGINE_SOURCES}
     ${PLUGIN_SOURCES}
-    src/MainGUI.cpp
-    # main.cpp would go here
+    src/UIRenderer.cpp
 )
 
-# Fetch ImGui
 include(FetchContent)
+find_package(OpenGL REQUIRED)
+
+# Fetch Glad
+set(GLAD_DIR "${CMAKE_CURRENT_BINARY_DIR}/glad" CACHE INTERNAL "")
+set(GLAD_PROFILE "compatibility" CACHE STRING "" FORCE)
+set(GLAD_API "gl=3.3" CACHE STRING "" FORCE)
+set(GLAD_GENERATOR "c" CACHE STRING "" FORCE)
+
 FetchContent_Declare(
-  imgui
-  GIT_REPOSITORY https://github.com/ocornut/imgui.git
-  GIT_TAG docking
+  glad
+  GIT_REPOSITORY https://github.com/Dav1dde/glad.git
+  GIT_TAG v0.1.36
 )
-FetchContent_MakeAvailable(imgui)
+FetchContent_MakeAvailable(glad)
+
+# Fetch HarfBuzz (for text shaping)
+FetchContent_Declare(
+  harfbuzz
+  GIT_REPOSITORY https://github.com/harfbuzz/harfbuzz.git
+  GIT_TAG 8.3.0 # Use a recent stable tag
+)
+FetchContent_MakeAvailable(harfbuzz)
+
+# Fetch FreeType
+FetchContent_Declare(
+  freetype
+  GIT_REPOSITORY https://github.com/freetype/freetype.git
+  GIT_TAG VER-2-13-2 # Use a recent stable tag
+)
+FetchContent_MakeAvailable(freetype)
 
 # Fetch GLFW
 FetchContent_Declare(
@@ -57,32 +83,38 @@ set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
 set(GLFW_INSTALL OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(glfw)
 
-# Update target sources to include Main and ImGui backends
+# Fetch RtAudio
+FetchContent_Declare(
+  rtaudio
+  GIT_REPOSITORY https://github.com/thestk/rtaudio.git
+  GIT_TAG 6.0.1
+)
+set(RTAUDIO_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+set(RTAUDIO_BUILD_STATIC_LIBS ON CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(rtaudio)
+
+# Update target sources
 target_sources(metronome_engine PRIVATE
     src/main.cpp
-    ${imgui_SOURCE_DIR}/imgui.cpp
-    ${imgui_SOURCE_DIR}/imgui_draw.cpp
-    ${imgui_SOURCE_DIR}/imgui_tables.cpp
-    ${imgui_SOURCE_DIR}/imgui_widgets.cpp
-    ${imgui_SOURCE_DIR}/imgui_demo.cpp
-    ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
-    ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
+    src/FontRenderer.cpp
 )
 
+# Link libraries
 target_include_directories(metronome_engine PRIVATE 
-    ${imgui_SOURCE_DIR}
-    ${imgui_SOURCE_DIR}/backends
+    ${harfbuzz_SOURCE_DIR}/src
+    ${freetype_SOURCE_DIR}/include
+    ${rtaudio_SOURCE_DIR}
 )
 
-# miniaudio is header-only, so just make sure it's in include/
-# For external libraries (nlohmann_json, etc.), use find_package or FetchContent
+# dr_wav is header-only, already in include/
+# RingBuffer, DCOffsetFilter, PitchResult are header-only, already in include/
 
 if(WIN32)
-    target_link_libraries(metronome_engine PRIVATE winmm glfw OpenGL::GL)
+    target_link_libraries(metronome_engine PRIVATE winmm glfw OpenGL::GL freetype harfbuzz glad rtaudio)
 elseif(APPLE)
-    target_link_libraries(metronome_engine PRIVATE glfw "-framework CoreFoundation" "-framework AudioToolbox" "-framework OpenGL")
+    target_link_libraries(metronome_engine PRIVATE glfw "-framework CoreFoundation" "-framework AudioToolbox" "-framework OpenGL" freetype harfbuzz rtaudio)
 else()
-    target_link_libraries(metronome_engine PRIVATE glfw GL pthread dl)
+    target_link_libraries(metronome_engine PRIVATE glfw GL pthread dl freetype harfbuzz rtaudio)
 endif()
 
 find_package(OpenGL REQUIRED)

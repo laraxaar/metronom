@@ -49,6 +49,17 @@ public:
      * @param jsonConfig A JSON string containing module-specific settings.
      */
     virtual void onConfigChange(const std::string& jsonConfig) = 0;
+    
+    /**
+     * @brief Set a specific parameter value.
+     */
+    virtual void setParameter(int id, float value) = 0;
+
+    /**
+     * @brief Check if the module wants to override the current BPM.
+     * @return The new BPM, or -1.0 if no override.
+     */
+    virtual double getBpmOverride() const { return -1.0; }
 
     /**
      * @brief Interface name for plugin identification.

@@ -9,5 +9,9 @@ bool UIController::postVisualData(const VisualData& data) {
 }
 
 std::optional<VisualData> UIController::getLatestVisualData() {
-    return m_visualQueue.pop();
+    std::optional<VisualData> latest = std::nullopt;
+    while (auto opt = m_visualQueue.pop()) {
+        latest = opt;
+    }
+    return latest;
 }

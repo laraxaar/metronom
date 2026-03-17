@@ -1,5 +1,8 @@
 #include "FreePlayTracker.h"
-
+#include <vector>
+#include <algorithm>
+#include <numeric>
+#include <cmath>
 void FreePlayTracker::reset() {
     m_onsetTimes.clear();
     liveBpm.store(0.0);
